@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
 from scapy.all import *
+import time
+
+#conf.L3socket=L3RawSocket
 
 class TCPConn:
 
@@ -19,8 +22,10 @@ class TCPConn:
     class ConnectInterruption:
         pass
     class InterruptionAfterTheSyn(ConnectInterruption):
+        """The first SYN will just be transmitted, without any further action."""
         pass
     class InterruptionAfterTheSynAck(ConnectInterruption):
+        """The SYN-ACK from the remote has been received, but will not be acknowledged."""
         pass
 
     def __init__(self, ip, dport=80):
@@ -29,7 +34,7 @@ class TCPConn:
         self.sport = RandShort()._fix()
 
     def connect(self, timeout=10, interruption=None):
-        """Perform the 3-Way Handshake (SYN, SYN-ACK, ACK)"""
+        """Perform the 3-Way Handshake (SYN, SYN-ACK, ACK) to initiate the connection."""
 
         # Prepare the SYN
         syn_pck = IP(dst=self.ip)/TCP(sport=self.sport, dport=self.dport, flags="S")
@@ -38,11 +43,10 @@ class TCPConn:
             # Send the SYN, without waiting the SYN-ACK
             send(syn_pck)
             return
-        else:
-            # Send the SYN, the server has to response with a SYN-ACK
-            synack_pck = sr1(syn_pck, timeout=timeout)
-            if (synack_pck is None) or (synack_pck.sprintf("%TCP.flags%") != "SA"):
-                raise TCPConn.ConnImpossibleError
+        # Send the SYN, the server has to response with a SYN-ACK
+        synack_pck = sr1(syn_pck, timeout=timeout)
+        if (synack_pck is None) or (synack_pck.sprintf("%TCP.flags%") != "SA"):
+            raise TCPConn.ConnImpossibleError
 
         # Interruption of the hanshake after the SYN-ACK reception
         if interruption is TCPConn.InterruptionAfterTheSynAck:
@@ -50,47 +54,98 @@ class TCPConn:
 
         self.local_seq = 1
         self.remote_seq = synack_pck.seq + 1
-        self.remote_window = synack_pck.window
+        self.local_window = synack_pck.window
+        self.full_window = synack_pck.window
 
         # Send the ACK
         ack_pck = IP(dst=self.ip)/TCP(sport=self.sport, dport=self.dport, flags="A")
         ack_pck.seq = self.local_seq
         ack_pck.ack = self.remote_seq
-        ack_pck.window = self.remote_window
+        ack_pck.window = self.local_window
         send(ack_pck)
 
     class TransmitInterruption:
         pass
     class InterruptionDoNotAcknowledge(TransmitInterruption):
+        """
+        If the ACK packet received from the remote peer (acknowledging the
+        transmitted data) contains payload, this payload will not be acknowledged.
+        """
         pass
 
     def transmit(self, data, interruption=None):
         """Transmit data to the peer."""
 
+        # Prepare the request to the server    
         pck = IP(dst=self.ip)/TCP(sport=self.sport, dport=self.dport, flags="A")/data
-        pck.seq = self.local_seq
         pck.ack = self.remote_seq
-        pck.window = self.remote_window
+        pck.seq = self.local_seq
+        pck.window = self.local_window
 
+        if interruption is TCPConn.InterruptionDoNotAcknowledge:
+            # Send the data, without waiting the following ACK and response
+            send(pck)
+            return
+        # Send the data, the server has to response with ACK and response data
         ack_pck_response = sr1(pck, timeout=1)
-        if (ack_pck_response is None) or not ("A" in ack_pck_response.sprintf("%TCP.flags%")):
+        if (not ack_pck_response) or not ("A" in ack_pck_response.sprintf("%TCP.flags%")):
+            raise TCPConn.AckNotReceivedError
+        self.local_seq += len(data)
+
+        # Acknowledge the server while their is somehting to acknowledge
+        # TODO: check that the size of our window doesn't reach zero !
+        # TODO: if the server send more than two packets in order to transmit
+        # the response, each packet will be repeated by the server before we
+        # acknowledge it !
+        while ack_pck_response and (len(ack_pck_response.load) > 0):
+            self.remote_seq += len(ack_pck_response.load)
+            self.local_window -= len(ack_pck_response.load)
+            ack_pck = IP(dst=self.ip)/TCP(sport=self.sport, dport=self.dport, flags="A")
+            ack_pck.seq = self.local_seq
+            ack_pck.ack = self.remote_seq
+            ack_pck.window = self.local_window
+            ack_pck_response = sr1(ack_pck, timeout=3)
+        self.local_window = self.full_window
+
+    class CloseInterruption:
+        pass
+    class InterruptionDoNotAcknowledgeTheFin(CloseInterruption):
+        """
+        After the remote peer received and acknolwedged our FIN packet, we
+        also expect that to receive a FIN packet, but we do not acknowledge it.
+        """
+        pass
+
+    def close(self, timeout=1, interruption=None):
+        """Perform the 4-Way handshake to close the connection."""
+
+        # Prepare the FIN 
+        fin_pck = IP(dst=self.ip)/TCP(sport=self.sport, dport=self.dport, flags="F")
+        fin_pck.seq = self.local_seq
+        fin_pck.ack = self.remote_seq
+        fin_pck.window = self.local_window
+
+        # Send the FIN, the server has to response with a ACK and a FIN
+        answered, unanswered = sr(fin_pck, timeout=2)
+        if (len(answered) == 0) or not ("A" in answered[0][1].sprintf("%TCP.flags%")):
             raise TCPConn.AckNotReceivedError
 
-        self.local_seq += len(data)
-        self.remote_seq += len(ack_pck_response.load)
-
-        # Nothing to acknwoledge ?
-        if (len(ack_pck_response.load) == 0) or (interruption is TCPConn.InterruptionDoNotAcknowledge):
+        # Interruption of the handshake without acknowledging the last FIN
+        if interruption is TCPConn.InterruptionDoNotAcknowledgeTheFin:
             return
 
+        self.local_seq += 1
+        self.remote_seq += 1
+
+        # Send the ACK
         ack_pck = IP(dst=self.ip)/TCP(sport=self.sport, dport=self.dport, flags="A")
         ack_pck.seq = self.local_seq
         ack_pck.ack = self.remote_seq
-        ack_pck.window = self.remote_window
         send(ack_pck)
 
-    def close(self):
-        rst_pck = IP(dst=self.ip)/TCP(sport=self.sport,dport=self.dport, flags="R")
+    def reset(self):
+        """Send a RST packet to abort the connection."""
+        rst_pck = IP(dst=self.ip)/TCP(sport=self.sport, dport=self.dport, flags="R")
         rst_pck.seq = self.local_seq
         send(rst_pck)
 
@@ -108,29 +163,106 @@ def initiate_connections(ip, port, n, interruption=None):
             cs.append(c)
     return cs
 
-
-def test_interruption_after_syn_connections(ip, port, n):
-    cs = initiate_connections(ip, port, n, interruption=TCPConn.InterruptionAfterTheSyn)
-    return len(cs)
-
-def test_interruption_after_syn_ack_connections(ip, port, n):
-    cs = initiate_connections(ip, port, n, interruption=TCPConn.InterruptionAfterTheSynAck)
-    return len(cs)
-
-def test_connections(ip, port, n):
-    cs = initiate_connections(ip, port, n)
+def probe_connections(ip, port, probes):
+    """Try to open a number of connections in //."""
+    cs = initiate_connections(ip, port, probes)
     for c in cs:
         c.close()
     return len(cs)
 
+def wait_until_is_available(ip, port, probes=1, timeout=60):
+    """Wait until the server accepts one or several new connection in //."""
+    iteration = 0
+    while (probe_connections(ip, port, probes) < probes) and (iteration < (timeout / 10)):
+        time.sleep(10)
+        iteration += 1
+    print("---> We were not able to initiate {} connections in // during at least {} s.".format(probes, iteration * 10))
 
-def test_http_connections(ip, port, n):
-    cs = initiate_connections(ip, port, n)
-    for c in cs:
-        c.transmit("GET /netx/Admin.html HTTP/1.1\r\nHost: {}\r\n\r\n".format(ip), interruption=TCPConn.InterruptionDoNotAcknowledge)
-    for c in cs:
-        c.close()
+def test(ip, port, probes, payload=None):
+    max_nb_connections = probe_connections(ip, port, probes)
+    if max_nb_connections == 0:
+        print("The server accepted 0 connections ... unable to test somethings !")
+    print("The server accepted {} connections.".format(max_nb_connections))
 
+    # ----
+
+    initiate_connections(ip, port, max_nb_connections, interruption=TCPConn.InterruptionAfterTheSyn)
+
+    wait_until_is_available(ip, port, max_nb_connections, timeout=60)
+    nb_connections = probe_connections(ip, port, max_nb_connections)
+    print("After transmission of SYN packets without any further action, the server accepts {} connections.".format(nb_connections))
+
+    # ----
+
+    initiate_connections(ip, port, max_nb_connections, interruption=TCPConn.InterruptionAfterTheSynAck)
+
+    wait_until_is_available(ip, port, max_nb_connections, timeout=60)
+    nb_connections = probe_connections(ip, port, max_nb_connections)
+    print("After reception of the SYN-ACK packet, without the transmission of the corresponding ACK, the server accepts {} connections."
+        .format(nb_connections))
+
+    # ----
+
+    cs = initiate_connections(ip, port, max_nb_connections)
+    for c in cs:
+        c.close(interruption=TCPConn.InterruptionDoNotAcknowledgeTheFin)
+
+    wait_until_is_available(ip, port, max_nb_connections, timeout=60*4)
+    nb_connections = probe_connections(ip, port, max_nb_connections)
+    print("After reception of the FIN packet, without the transmission of the corresponding ACK, the server accepts {} connections."
+        .format(nb_connections))
+
+    # ---- The following tests are only available if a "request" payload (triggering the transmission of a "response" in the other side).
+
+    if payload is not None:
+        # ----
+
+        cs = initiate_connections(ip, port, 1) # TODO: More than 1 connection here, seems to confuse the close() method.
+        for c in cs:
+            c.transmit(payload)
+        for c in cs:
+            c.close()
+
+        wait_until_is_available(ip, port, max_nb_connections, timeout=60)
+        nb_connections = probe_connections(ip, port, max_nb_connections)
+        print("After simple transmission of a request and the reception of a response, the server accepts {} connections.".format(nb_connections))
+
+        # ----
+
+        cs = initiate_connections(ip, port, max_nb_connections)
+        for c in cs:
+            c.transmit(payload, interruption=TCPConn.InterruptionDoNotAcknowledge)
+
+        wait_until_is_available(ip, port, max_nb_connections, timeout=60*4)
+        nb_connections = probe_connections(ip, port, max_nb_connections)
+        print("After transmission of a request and the reception of a response, without the transmission of the corresponding ACK AND without "
+              "the normal connection termination, the server accepts {} connections.".format(nb_connections))
+
+        # ----
+
+        cs = initiate_connections(ip, port, max_nb_connections)
+        for c in cs:
+            c.transmit(payload)
+        for c in cs:
+            c.reset()
+
+        wait_until_is_available(ip, port, max_nb_connections, timeout=60)
+        nb_connections = probe_connections(ip, port, max_nb_connections)
+        print("After transmission of a request and the reception of a response, and the transmission of a RST packet, "
+              "the server accepts {} connections.".format(nb_connections))
+
+        # ----
+
+        cs = initiate_connections(ip, port, max_nb_connections)
+        for c in cs:
+            c.transmit(payload, interruption=TCPConn.InterruptionDoNotAcknowledge)
+        for c in cs:
+            c.reset()
+
+        wait_until_is_available(ip, port, max_nb_connections, timeout=60*4)
+        nb_connections = probe_connections(ip, port, max_nb_connections)
+        print("After transmission of a request and the reception of a response, without the transmission of the corresponding ACK AND with "
+              "the transmission of a RST packet, the server accepts {} connections.".format(nb_connections))
 
 if __name__ == "__main__":
     import argparse
@@ -145,7 +277,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, 
         description=description, epilog=epilog)
     parser.add_argument('--verbose', dest='verbose', action='store_true', help='Verbose output', default=False)
-    parser.add_argument('--http', dest='http', action='store_true', help='Send HTTP/1.1 requests', default=False)
+    parser.add_argument('--payload', dest='payload_file', type=str, help='Pathname of a file with the payload to transmit', default=None)
     parser.add_argument('address', metavar='address', type=str, help='TCP server address')
     parser.add_argument('port', metavar='port', type=int, help='Port number')
     parser.add_argument('probes', metavar='probes', type=int, help='Number of connection probes')
@@ -153,22 +285,13 @@ if __name__ == "__main__":
     if not args.verbose:
         conf.verb = 0
 
-    # Test the connection for a TCP server
-    n = test_connections(args.address, args.port, args.probes)
-    print("Number of connections : {}".format(n))
+    if args.payload_file:
+        if args.payload_file == "-":
+            payload = sys.stdin.read()
+        else:
+            with open(args.payload_file, "r") as f:
+                payload = f.read()
+    else:
+        payload = None
 
-    time.sleep(1)
-
-    # Test the connection (interruption after the SYN) for a TCP server
-    n = test_interruption_after_syn_connections(args.address, args.port, args.probes)
-    print("Number of interrupted (after the SYN) connections : {}".format(n))
-    
-    time.sleep(1)
-
-    # Test the connection (interruption after the SYN-ACK) for a TCP server
-    n = test_interruption_after_syn_ack_connections(args.address, args.port, args.probes)
-    print("Number of interrupted (after the SYN-ACK) connections : {}".format(n))
-
-    # Test the connection for a HTTP/1.1 server
-    time.sleep(1)
-    test_http_connections(args.address, args.port, args.probes)
+    test(args.address, args.port, args.probes, payload)
