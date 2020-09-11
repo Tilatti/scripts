@@ -1,4 +1,4 @@
-# Collection of scripts and programs
+# Collection of scripts
 
 ## create_x509_chain
 
