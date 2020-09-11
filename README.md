@@ -2,7 +2,7 @@
 
 ## create_x509_chain
 
-This script use OpenSSL to generate a chain of X509 certificates in the
+This bash script uses OpenSSL to generate a chain of X509 certificates in the
 directory given in argument.
 
 ```console
