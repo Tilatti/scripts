@@ -212,9 +212,11 @@ def test(ip, port, probes, payload=None):
     print("After reception of the FIN packet, without the transmission of the corresponding ACK, the server accepts {} connections."
         .format(nb_connections))
 
-    # ---- The following tests are only available if a "request" payload (triggering the transmission of a "response" in the other side).
+    # ---- The following tests are only available if a "request" payload
+    # ---- (triggering the transmission of a "response" in the other side).
 
     if payload is not None:
+
         # ----
 
         cs = initiate_connections(ip, port, 1) # TODO: More than 1 connection here, seems to confuse the close() method.
@@ -233,7 +235,7 @@ def test(ip, port, probes, payload=None):
         for c in cs:
             c.transmit(payload, interruption=TCPConn.InterruptionDoNotAcknowledge)
 
-        wait_until_is_available(ip, port, max_nb_connections, timeout=60*4)
+        wait_until_is_available(ip, port, max_nb_connections, timeout=60*4*2)
         nb_connections = probe_connections(ip, port, max_nb_connections)
         print("After transmission of a request and the reception of a response, without the transmission of the corresponding ACK AND without "
               "the normal connection termination, the server accepts {} connections.".format(nb_connections))
@@ -289,9 +291,15 @@ if __name__ == "__main__":
         if args.payload_file == "-":
             payload = sys.stdin.read()
         else:
-            with open(args.payload_file, "r") as f:
+            with open(args.payload_file, "rb") as f:
                 payload = f.read()
     else:
         payload = None
+
+    try:
+        probe_connections(args.address, args.port, 1)
+    except TCPConn.Error:
+        parser.error("Unable to perform non-erroneous connection's open & close" 
+            "... maybe you forgot to do the following:\n{}".format(epilog))
 
     test(args.address, args.port, args.probes, payload)
