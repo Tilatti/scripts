@@ -1,6 +1,6 @@
-# Collection of scripts and programs
+# Collection of scripts
 
-## create_x509_chain
+## create_x509_chain
 
 This bash script uses OpenSSL to generate a chain of X509 certificates in the
 directory given in argument.
