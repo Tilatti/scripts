@@ -118,7 +118,6 @@ class Commit:
         root = None
         in_change_list = False
         files = []
-        print(body)
         for line in body.split("\n"):
             if not in_change_list:
                 m = re.search("Author[^:]*: (.*)", line)
@@ -152,7 +151,7 @@ class Issue:
         self.jira = project.jira
         self.jira_issue = jira_issue
 
-    class Issue.TransitionFailed(Exception):
+    class TransitionFailed(Exception):
         pass
 
     @staticmethod
@@ -314,24 +313,22 @@ if __name__ == "__main__":
     parser_list.add_argument("--all", dest="all", action="store_true", help="All the issues")
     parser_list.add_argument("--subject", dest="subject", type=str, help="The subject", default=None)
 
+    # parse the show action arguments 
+    parser_edit = subparsers.add_parser("show", help="Show general information about the project")
     # parse the display action arguments 
     parser_display = subparsers.add_parser("display", help="display a ticket")
     parser_display.add_argument("ticket", metavar="ticket", type=str, help="The ticket to display")
-
     # parse the new action arguments 
     parser_new = subparsers.add_parser("new", help="add a new ticket")
     parser_new.add_argument("--subject", dest="subject", type=str, help="Subject of the new ticket")
     parser_new.add_argument("--summary", dest="summary", type=str, help="Summary of the new ticket")
     parser_new.add_argument("--description", dest="description", type=str, help="Description of the new ticket")
-
     # parse the edit action arguments 
     parser_edit = subparsers.add_parser("edit", help="edit a ticket")
     parser_edit.add_argument("ticket", metavar="ticket", type=str, help="The ticket to display")
-
     # parse the begin action arguments 
     parser_edit = subparsers.add_parser("begin", help="begin to work on a ticket")
     parser_edit.add_argument("ticket", metavar="ticket", type=str, help="The ticket to work")
-
     # parse the end action arguments 
     parser_edit = subparsers.add_parser("end", help="finish to work on a ticket")
     parser_edit.add_argument("ticket", metavar="ticket", type=str, help="The ticket to finish")
