@@ -48,6 +48,6 @@ inter.crt                             inter.srl  leaf.key   root.index       roo
 inter.csr                             leaf.crt   root.conf  root.index.attr  root.serial
 ```
 
-## jira-cli
+## jira-cli
 
 Dependencies: python3-jira, w3m
