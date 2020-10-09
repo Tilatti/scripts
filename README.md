@@ -47,3 +47,7 @@ BD4FD0207809F674A992095978D2F97D.pem  inter.pem  leaf.csr   root.crt         roo
 inter.crt                             inter.srl  leaf.key   root.index       root.key
 inter.csr                             leaf.crt   root.conf  root.index.attr  root.serial
 ```
+
+## jira-cli
+
+Dependencies: python3-jira, w3m
